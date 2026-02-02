@@ -1,0 +1,80 @@
+name: Build Standalone Ruby 3.2.3
+
+on:
+  workflow_dispatch: # 手动触发
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-13
+            arch: x86_64
+          - os: macos-latest
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          brew install openssl@3 readline libyaml gmp ruby-build
+          echo "OPENSSL_PATH=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "READLINE_PATH=$(brew --prefix readline)" >> $GITHUB_ENV
+          echo "LIBYAML_PATH=$(brew --prefix libyaml)" >> $GITHUB_ENV
+
+      - name: Build Ruby 3.2.3
+        run: |
+          export PREFIX="$(pwd)/ruby-3.2.3-standalone"
+          # 配置编译参数：允许相对路径加载，并指定依赖库位置
+          export CONFIGURE_OPTS="--enable-load-relative --disable-install-doc --with-openssl-dir=${{ env.OPENSSL_PATH }} --with-readline-dir=${{ env.READLINE_PATH }} --with-libyaml-dir=${{ env.LIBYAML_PATH }}"
+          
+          ruby-build 3.2.3 $PREFIX
+
+      - name: Make Portable (Fix dylib links)
+        run: |
+          PREFIX="$(pwd)/ruby-3.2.3-standalone"
+          LIB_DIR="$PREFIX/lib"
+          
+          # 1. 将必要的系统 dylib 拷贝进 Ruby 内部目录
+          cp ${{ env.OPENSSL_PATH }}/lib/libssl.3.dylib $LIB_DIR/
+          cp ${{ env.OPENSSL_PATH }}/lib/libcrypto.3.dylib $LIB_DIR/
+          cp ${{ env.READLINE_PATH }}/lib/libreadline.8.dylib $LIB_DIR/
+          cp ${{ env.LIBYAML_PATH }}/lib/libyaml-0.2.dylib $LIB_DIR/
+
+          # 2. 修复 Ruby 主二进制文件的链接
+          # 使用 @executable_path 让它在任何地方运行都能找到 lib 文件夹下的库
+          BINARY="$PREFIX/bin/ruby"
+          
+          fix_links() {
+            local target=$1
+            # 查找所有链接到 /opt/homebrew 或 /usr/local 的库
+            otool -L "$target" | grep -E "/opt/homebrew|/usr/local" | awk '{print $1}' | while read lib; do
+              libname=$(basename "$lib")
+              install_name_tool -change "$lib" "@executable_path/../lib/$libname" "$target"
+            done
+          }
+
+          fix_links "$BINARY"
+
+          # 3. 修复所有 Ruby 扩展模块 (*.bundle) 的链接
+          find "$LIB_DIR" -name "*.bundle" | while read bundle; do
+            # 对于 bundle 文件，路径起点通常是其目录，所以需要多加一层 ..
+            otool -L "$bundle" | grep -E "/opt/homebrew|/usr/local" | awk '{print $1}' | while read lib; do
+              libname=$(basename "$lib")
+              # .bundle 文件通常在 lib/ruby/3.2.0/arm64-darwin23/ 这种深层目录下
+              # 这里简单起见，可以改为指向相对路径或绝对路径修正
+              install_name_tool -change "$lib" "@loader_path/$(python3 -c "import os; print(os.path.relpath('$LIB_DIR', os.path.dirname('$bundle')))")/$libname" "$bundle"
+            done
+          done
+
+      - name: Package Artifact
+        run: |
+          tar -czvf ruby-3.2.3-macos-${{ matrix.arch }}.tar.gz ruby-3.2.3-standalone
+
+      - name: Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-3.2.3-macos-${{ matrix.arch }}
+          path: ruby-3.2.3-macos-${{ matrix.arch }}.tar.gz
