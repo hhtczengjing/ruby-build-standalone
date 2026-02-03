@@ -6,9 +6,9 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # 严格遵循您的要求，不调整此名称
           - os: macos-15-intel
             arch: x86_64
           - os: macos-latest
@@ -20,20 +20,27 @@ jobs:
 
       - name: Install Build Dependencies
         run: |
-          # 预装核心编译依赖
+          # 显式安装依赖，确保编译环境干净
           brew install openssl@3 readline libyaml gmp ruby-build
           echo "BREW_PREFIX=$(brew --prefix)" >> $GITHUB_ENV
 
       - name: Build Ruby 3.2.3
         run: |
           export PREFIX="$(pwd)/ruby-dist"
-          # --enable-load-relative: 核心参数，让 Ruby 内部的寻址（如查找 Gem）相对于 bin/ruby 位置
+          
+          # 精简后的配置参数，避免重复
+          # 增加 --enable-shared 确保生成 .dylib，便于路径修复
           export CONFIGURE_OPTS="--enable-load-relative \
+                                 --enable-shared \
                                  --disable-install-doc \
                                  --with-openssl-dir=$(brew --prefix openssl@3) \
                                  --with-readline-dir=$(brew --prefix readline) \
                                  --with-libyaml-dir=$(brew --prefix libyaml) \
                                  --with-gmp-dir=$(brew --prefix gmp)"
+          
+          # 限制并发数为 2，防止内存溢出导致任务取消 (Operation Canceled)
+          export MAKE_OPTS="-j2"
+          
           ruby-build 3.2.3 $PREFIX
 
       - name: Bundle Dependencies and Fix Mach-O (RPATH Strategy)
@@ -42,82 +49,9 @@ jobs:
           LIB_DEST="$PREFIX/lib"
           BREW_PATH="${{ env.BREW_PREFIX }}"
 
-          echo "--- 1. 收集依赖动态库 ---"
-          # 提取 Ruby 运行必须的所有第三方 dylib
+          echo "--- 1. 拷贝依赖库 ---"
           LIBS=("libssl.3.dylib" "libcrypto.3.dylib" "libreadline.8.dylib" "libyaml-0.2.dylib" "libgmp.10.dylib")
           for lib in "${LIBS[@]}"; do
             LIB_SRC=$(find $BREW_PATH/lib -name "$lib" -type f | head -n 1)
             if [ -f "$LIB_SRC" ]; then
-              cp "$LIB_SRC" "$LIB_DEST/"
-              chmod 755 "$LIB_DEST/$lib"
-              echo "✅ 已打包: $lib"
-            fi
-          done
-
-          echo "--- 2. 规范化库标识 (LC_ID_DYLIB) ---"
-          # 必须将 dylib 的内建 ID 改为 @rpath，否则加载器会拒绝匹配
-          for dylib in "$LIB_DEST"/*.dylib; do
-            [ -e "$dylib" ] || continue
-            libname=$(basename "$dylib")
-            install_name_tool -id "@rpath/$libname" "$dylib"
-            
-            # 修复库与库之间的互相引用 (例如 libssl 引用 libcrypto)
-            otool -L "$dylib" | grep -E "/opt/homebrew|/usr/local|Cellar" | awk '{print $1}' | while read old_path; do
-              install_name_tool -change "$old_path" "@rpath/$(basename "$old_path")" "$dylib"
-            done
-          done
-
-          echo "--- 3. 递归修复 Ruby 程序及所有 .bundle 模块 ---"
-          # 查找所有 Mach-O 格式的文件
-          find "$PREFIX" -type f \( -perm +111 -o -name "*.bundle" \) | while read bin; do
-            if file "$bin" | grep -q "Mach-O"; then
-              chmod +w "$bin"
-              
-              # A. 将硬编码的 Homebrew 路径改为通用的 @rpath 引用
-              otool -L "$bin" | grep -E "/opt/homebrew|/usr/local|Cellar" | awk '{print $1}' | while read old_path; do
-                install_name_tool -change "$old_path" "@rpath/$(basename "$old_path")" "$bin"
-              done
-
-              # B. 注入冗余的 RPATH 搜寻路径 (关键修复点)
-              # 针对 bin/ruby
-              install_name_tool -add_rpath "@executable_path/../lib" "$bin" 2>/dev/null || true
-              # 针对深度嵌套的 .bundle，注入多层级回溯，确保系统能自动在 lib 目录下找到库
-              # 路径示例: lib/ruby/3.2.0/arm64-darwin24/openssl.bundle
-              install_name_tool -add_rpath "@loader_path/../../../../" "$bin" 2>/dev/null || true
-              install_name_tool -add_rpath "@loader_path/../../../" "$bin" 2>/dev/null || true
-              install_name_tool -add_rpath "@loader_path/../../" "$bin" 2>/dev/null || true
-            fi
-          done
-
-      - name: Verify Standalone Execution
-        run: |
-          PREFIX="$(pwd)/ruby-dist"
-          echo "Testing Ruby execution with zero-dependency..."
-          
-          # 检查是否还残留硬编码路径
-          OT_OUT=$(otool -L "$PREFIX/bin/ruby" | grep -E "/opt/homebrew|/usr/local" || true)
-          if [ ! -z "$OT_OUT" ]; then
-             echo "❌ 验证失败: 仍存在硬编码路径"
-             exit 1
-          fi
-
-          # 核心功能测试
-          "$PREFIX/bin/ruby" -v
-          "$PREFIX/bin/ruby" -ropenssl -ryaml -e "puts '✅ Ruby 3.2.3 环境与 OpenSSL/YAML 库全部加载成功！'"
-
-      - name: Package Artifact
-        run: |
-          # 清理非运行必要文件
-          rm -rf ruby-dist/include
-          rm -rf ruby-dist/lib/pkgconfig
-          find ruby-dist/lib -name "*.a" -delete
-          
-          OUTPUT="ruby-3.2.3-standalone-${{ matrix.arch }}.tar.gz"
-          tar -czvf "$OUTPUT" ruby-dist
-          echo "OUTPUT_FILE=$OUTPUT" >> $GITHUB_ENV
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: ruby-3.2.3-macos-15-${{ matrix.arch }}
-          path: ${{ env.OUTPUT_FILE }}
+              cp "$LIB_SRC" "$
