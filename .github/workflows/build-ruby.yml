@@ -40,56 +40,50 @@ jobs:
           LIB_DEST="$PREFIX/lib"
           BREW_PATH="${{ env.BREW_PREFIX }}"
 
-          echo "--- 1. 收集所有非系统依赖库 ---"
-          # 定义需要收集的核心依赖
+          echo "--- 1. 收集依赖库 ---"
           LIBS=("libssl.3.dylib" "libcrypto.3.dylib" "libreadline.8.dylib" "libyaml-0.2.dylib" "libgmp.10.dylib")
-          
           for lib in "${LIBS[@]}"; do
             LIB_SRC=$(find $BREW_PATH/lib -name "$lib" -type f | head -n 1)
-            if [ -f "$LIB_SRC" ]; then
-              cp "$LIB_SRC" "$LIB_DEST/"
-              chmod 755 "$LIB_DEST/$lib"
-              echo "✅ Bundled: $lib"
-            else
-              echo "❌ Warning: Could not find $lib"
-            fi
+            [ -f "$LIB_SRC" ] && cp "$LIB_SRC" "$LIB_DEST/" && chmod 755 "$LIB_DEST/$lib"
           done
 
-          echo "--- 2. 定义路径修复逻辑 ---"
-          # 修复 Mach-O 文件的函数
-          fix_links() {
-            local file=$1
-            local target_rel_path=$2
-            
-            # 这里的正则匹配 /opt/homebrew (ARM) 和 /usr/local (Intel) 以及 Cellar 路径
-            otool -L "$file" | grep -E "/opt/homebrew|/usr/local|${{ env.BREW_PREFIX }}" | awk '{print $1}' | while read old_path; do
-              # 排除系统库（虽然正则已经过滤，但做个保险）
-              if [[ "$old_path" == /usr/lib/* ]] || [[ "$old_path" == /System/* ]]; then continue; fi
-              
-              lib_name=$(basename "$old_path")
-              echo "   Fixing $lib_name in $(basename "$file")"
-              install_name_tool -change "$old_path" "$target_rel_path/$lib_name" "$file"
-            done
-          }
-
-          echo "--- 3. 递归处理所有二进制文件 ---"
-          
-          # A. 修复 lib 下的 dylib 相互引用 (使用 @loader_path)
+          echo "--- 2. 修复库文件自身的 ID 和相互引用 ---"
           for dylib in "$LIB_DEST"/*.dylib; do
             [ -e "$dylib" ] || continue
+            # 将 ID 改为 @rpath 名称
             install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib"
-            fix_links "$dylib" "@loader_path"
+            
+            # 修复 dylib 之间的引用 (比如 libssl 找 libcrypto)
+            # 使用 @loader_path 确保它们在同一目录下能互相找到
+            otool -L "$dylib" | grep -E "/opt/homebrew|/usr/local" | awk '{print $1}' | while read old_path; do
+              install_name_tool -change "$old_path" "@loader_path/$(basename "$old_path")" "$dylib"
+            done
           done
 
-          # B. 修复 Ruby 主程序 (使用 @executable_path)
-          fix_links "$PREFIX/bin/ruby" "@executable_path/../lib"
-
-          # C. 修复所有扩展模块 .bundle (使用动态相对路径)
+          echo "--- 3. 修复 Ruby 扩展模块 (*.bundle) ---"
+          # 这一步最关键：我们不再依赖复杂的相对路径计算，而是直接使用更稳健的深度搜索
           find "$LIB_DEST/ruby" -name "*.bundle" | while read bundle; do
             chmod 755 "$bundle"
-            # 计算 bundle 到 lib 根目录的层级关系
-            REL_TO_LIB=$(python3 -c "import os; print(os.path.relpath('$LIB_DEST', os.path.dirname('$bundle')))")
-            fix_links "$bundle" "@loader_path/$REL_TO_LIB"
+            
+            # 获取当前 bundle 所在目录的深度（相对于 PREFIX 的深度）
+            # 例如 lib/ruby/3.2.0/arm64-darwin24 深度为 4
+            # 我们需要跳 4 次回根目录，再进 lib
+            # 但更简单的方法是：直接跳到顶级 lib
+            
+            otool -L "$bundle" | grep -E "/opt/homebrew|/usr/local" | awk '{print $1}' | while read old_path; do
+              lib_name=$(basename "$old_path")
+              
+              # 重点：Ruby 3.2.3 的架构相关 bundle 在 lib/ruby/3.2.0/arm64-darwin24/ 目录下
+              # 从该目录到 lib/ 目录需要向上跳 4 级：../../../../
+              # 我们改用硬编码跳转确保成功
+              install_name_tool -change "$old_path" "@loader_path/../../../../$lib_name" "$bundle"
+            done
+          done
+
+          echo "--- 4. 修复 Ruby 主程序 ---"
+          # 从 bin/ruby 到 lib/ 只需要跳 1 级
+          otool -L "$PREFIX/bin/ruby" | grep -E "/opt/homebrew|/usr/local" | awk '{print $1}' | while read old_path; do
+            install_name_tool -change "$old_path" "@executable_path/../lib/$(basename "$old_path")" "$PREFIX/bin/ruby"
           done
 
       - name: Sanity Check
