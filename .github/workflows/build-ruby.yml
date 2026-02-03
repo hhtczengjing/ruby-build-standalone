@@ -20,16 +20,15 @@ jobs:
 
       - name: Install Build Dependencies
         run: |
-          # 显式安装依赖，确保编译环境干净
           brew install openssl@3 readline libyaml gmp ruby-build
           echo "BREW_PREFIX=$(brew --prefix)" >> $GITHUB_ENV
 
       - name: Build Ruby 3.2.3
         run: |
-          export PREFIX="$(pwd)/ruby-dist"
+          PREFIX="$(pwd)/ruby-dist"
+          mkdir -p "$PREFIX"
           
-          # 精简后的配置参数，避免重复
-          # 增加 --enable-shared 确保生成 .dylib，便于路径修复
+          # 精简配置参数，显式启用共享库
           export CONFIGURE_OPTS="--enable-load-relative \
                                  --enable-shared \
                                  --disable-install-doc \
@@ -38,12 +37,11 @@ jobs:
                                  --with-libyaml-dir=$(brew --prefix libyaml) \
                                  --with-gmp-dir=$(brew --prefix gmp)"
           
-          # 限制并发数为 2，防止内存溢出导致任务取消 (Operation Canceled)
+          # macos-15-intel 建议使用 -j2 提高内存稳定性
           export MAKE_OPTS="-j2"
-          
-          ruby-build 3.2.3 $PREFIX
+          ruby-build 3.2.3 "$PREFIX"
 
-      - name: Bundle Dependencies and Fix Mach-O (RPATH Strategy)
+      - name: Bundle Dependencies and Fix Mach-O
         run: |
           PREFIX="$(pwd)/ruby-dist"
           LIB_DEST="$PREFIX/lib"
@@ -52,6 +50,64 @@ jobs:
           echo "--- 1. 拷贝依赖库 ---"
           LIBS=("libssl.3.dylib" "libcrypto.3.dylib" "libreadline.8.dylib" "libyaml-0.2.dylib" "libgmp.10.dylib")
           for lib in "${LIBS[@]}"; do
-            LIB_SRC=$(find $BREW_PATH/lib -name "$lib" -type f | head -n 1)
-            if [ -f "$LIB_SRC" ]; then
-              cp "$LIB_SRC" "$
+            LIB_SRC=$(find "$BREW_PATH/lib" -name "$lib" -type f | head -n 1)
+            if [ -n "$LIB_SRC" ] && [ -f "$LIB_SRC" ]; then
+              cp "$LIB_SRC" "$LIB_DEST/"
+              chmod 755 "$LIB_DEST/$lib"
+              echo "✅ 已打包: $lib"
+            fi
+          done
+
+          echo "--- 2. 修复库标识 (LC_ID_DYLIB) ---"
+          for dylib in "$LIB_DEST"/*.dylib; do
+            [ -e "$dylib" ] || continue
+            libname=$(basename "$dylib")
+            install_name_tool -id "@rpath/$libname" "$dylib"
+            
+            # 修复库间引用
+            otool -L "$dylib" | grep -E "/opt/homebrew|/usr/local|Cellar" | awk '{print $1}' | while read -r old_path; do
+              [ -z "$old_path" ] && continue
+              install_name_tool -change "$old_path" "@rpath/$(basename "$old_path")" "$dylib"
+            done
+          done
+
+          echo "--- 3. 递归修复 RPATH ---"
+          # 寻找所有二进制文件
+          find "$PREFIX" -type f \( -perm +111 -o -name "*.bundle" -o -name "*.dylib" \) | while read -r bin; do
+            if file "$bin" | grep -q "Mach-O"; then
+              chmod +w "$bin"
+              
+              # 修改对外部 Brew 库的引用为 @rpath
+              otool -L "$bin" | grep -E "/opt/homebrew|/usr/local|Cellar" | awk '{print $1}' | while read -r old_path; do
+                [ -z "$old_path" ] && continue
+                install_name_tool -change "$old_path" "@rpath/$(basename "$old_path")" "$bin"
+              done
+
+              # 注入多级 RPATH 搜寻路径 (防止深度计算错误)
+              # 覆盖从 bin/ 到 lib/ruby/3.2.0/arch/ 的所有可能深度
+              install_name_tool -add_rpath "@executable_path/../lib" "$bin" 2>/dev/null || true
+              install_name_tool -add_rpath "@loader_path/../../../../" "$bin" 2>/dev/null || true
+              install_name_tool -add_rpath "@loader_path/../../../" "$bin" 2>/dev/null || true
+              install_name_tool -add_rpath "@loader_path/../../" "$bin" 2>/dev/null || true
+              install_name_tool -add_rpath "@loader_path/../" "$bin" 2>/dev/null || true
+            fi
+          done
+
+      - name: Verify
+        run: |
+          ./ruby-dist/bin/ruby -v
+          ./ruby-dist/bin/ruby -ropenssl -ryaml -e "puts '✅ Ruby 独立运行环境验证成功'"
+
+      - name: Package
+        run: |
+          rm -rf ruby-dist/include ruby-dist/lib/pkgconfig
+          find ruby-dist/lib -name "*.a" -delete
+          OUTPUT="ruby-3.2.3-standalone-${{ matrix.arch }}.tar.gz"
+          tar -czvf "$OUTPUT" ruby-dist
+          echo "FILENAME=$OUTPUT" >> $GITHUB_ENV
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-3.2.3-macos-15-${{ matrix.arch }}
+          path: ${{ env.FILENAME }}
