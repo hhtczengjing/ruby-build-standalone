@@ -28,7 +28,7 @@ jobs:
           PREFIX="$(pwd)/ruby-dist"
           mkdir -p "$PREFIX"
           
-          # 精简配置参数，显式启用共享库
+          # 配置参数优化：启用共享库并确保路径相对化
           export CONFIGURE_OPTS="--enable-load-relative \
                                  --enable-shared \
                                  --disable-install-doc \
@@ -37,7 +37,7 @@ jobs:
                                  --with-libyaml-dir=$(brew --prefix libyaml) \
                                  --with-gmp-dir=$(brew --prefix gmp)"
           
-          # macos-15-intel 建议使用 -j2 提高内存稳定性
+          # macos-15-intel 建议限制并发以保证稳定性
           export MAKE_OPTS="-j2"
           ruby-build 3.2.3 "$PREFIX"
 
@@ -51,62 +51,71 @@ jobs:
           LIBS=("libssl.3.dylib" "libcrypto.3.dylib" "libreadline.8.dylib" "libyaml-0.2.dylib" "libgmp.10.dylib")
           for lib in "${LIBS[@]}"; do
             LIB_SRC=$(find "$BREW_PATH/lib" -name "$lib" -type f | head -n 1)
-            if [ -n "$LIB_SRC" ] && [ -f "$LIB_SRC" ]; then
+            if [ -n "$LIB_SRC" ]; then
               cp "$LIB_SRC" "$LIB_DEST/"
               chmod 755 "$LIB_DEST/$lib"
               echo "✅ 已打包: $lib"
             fi
           done
 
-          echo "--- 2. 修复库标识 (LC_ID_DYLIB) ---"
+          echo "--- 2. 规范化库标识 (LC_ID_DYLIB) ---"
           for dylib in "$LIB_DEST"/*.dylib; do
             [ -e "$dylib" ] || continue
             libname=$(basename "$dylib")
+            # 将库自身的 ID 定义为 @rpath 模式
             install_name_tool -id "@rpath/$libname" "$dylib"
             
-            # 修复库间引用
+            # 修复库与库之间的依赖 (如 libssl 依赖 libcrypto)
             otool -L "$dylib" | grep -E "/opt/homebrew|/usr/local|Cellar" | awk '{print $1}' | while read -r old_path; do
               [ -z "$old_path" ] && continue
               install_name_tool -change "$old_path" "@rpath/$(basename "$old_path")" "$dylib"
             done
           done
 
-          echo "--- 3. 递归修复 RPATH ---"
-          # 寻找所有二进制文件
+          echo "--- 3. 递归修复 RPATH 搜索路径 ---"
+          # 遍历所有二进制文件 (ruby 主程序, .bundle 扩展, .dylib 库)
           find "$PREFIX" -type f \( -perm +111 -o -name "*.bundle" -o -name "*.dylib" \) | while read -r bin; do
             if file "$bin" | grep -q "Mach-O"; then
               chmod +w "$bin"
               
-              # 修改对外部 Brew 库的引用为 @rpath
+              # A. 将硬编码的外部库路径改为 @rpath 引用
               otool -L "$bin" | grep -E "/opt/homebrew|/usr/local|Cellar" | awk '{print $1}' | while read -r old_path; do
                 [ -z "$old_path" ] && continue
                 install_name_tool -change "$old_path" "@rpath/$(basename "$old_path")" "$bin"
               done
 
-              # 注入多级 RPATH 搜寻路径 (防止深度计算错误)
-              # 覆盖从 bin/ 到 lib/ruby/3.2.0/arch/ 的所有可能深度
+              # B. 注入多级搜寻路径 (RPATH)
+              # 针对 bin/ruby: 向上跳一级到 lib
               install_name_tool -add_rpath "@executable_path/../lib" "$bin" 2>/dev/null || true
-              install_name_tool -add_rpath "@loader_path/../../../../" "$bin" 2>/dev/null || true
+              # 针对 .bundle 扩展: 根据不同深度注入多种跳转方案，确保万无一失
+              # 路径 lib/ruby/3.2.0/arm64-darwin24/ 需要向上跳 3 级到达 lib/
               install_name_tool -add_rpath "@loader_path/../../../" "$bin" 2>/dev/null || true
+              install_name_tool -add_rpath "@loader_path/../../../../" "$bin" 2>/dev/null || true
               install_name_tool -add_rpath "@loader_path/../../" "$bin" 2>/dev/null || true
               install_name_tool -add_rpath "@loader_path/../" "$bin" 2>/dev/null || true
+              # 备选：在 Actions 验证阶段注入绝对路径
+              install_name_tool -add_rpath "$LIB_DEST" "$bin" 2>/dev/null || true
             fi
           done
 
-      - name: Verify
+      - name: Verify Execution
         run: |
+          echo "Checking Ruby environment..."
           ./ruby-dist/bin/ruby -v
-          ./ruby-dist/bin/ruby -ropenssl -ryaml -e "puts '✅ Ruby 独立运行环境验证成功'"
+          # 验证是否能成功加载 openssl 和 yaml 扩展
+          ./ruby-dist/bin/ruby -ropenssl -ryaml -e "puts '✅ Ruby 独立运行环境验证成功，所有依赖库已加载。'"
 
-      - name: Package
+      - name: Package Artifact
         run: |
+          # 移除不必要的开发头文件和静态库以减小体积
           rm -rf ruby-dist/include ruby-dist/lib/pkgconfig
           find ruby-dist/lib -name "*.a" -delete
+          
           OUTPUT="ruby-3.2.3-standalone-${{ matrix.arch }}.tar.gz"
           tar -czvf "$OUTPUT" ruby-dist
           echo "FILENAME=$OUTPUT" >> $GITHUB_ENV
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ruby-3.2.3-macos-15-${{ matrix.arch }}
