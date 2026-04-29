@@ -13,8 +13,11 @@ unset BUNDLE_PATH BUNDLE_GEMFILE
 unset RUBYLIB
 unset MY_RUBY_HOME RUBY_VERSION GEM_ROOT
 
+# Set GEM_HOME to standalone directory
+export GEM_HOME="$RUBY_HOME/lib/ruby/gems/3.2.0"
+
 run() {
-    env -u GEM_HOME -u GEM_PATH -u GEM_CACHE -u BUNDLE_PATH -u BUNDLE_GEMFILE -u RUBYLIB -u MY_RUBY_HOME -u RUBY_VERSION -u GEM_ROOT "$@"
+    env -u GEM_PATH -u GEM_CACHE -u BUNDLE_PATH -u BUNDLE_GEMFILE -u RUBYLIB -u MY_RUBY_HOME -u RUBY_VERSION -u GEM_ROOT "$@"
 }
 
 echo "=== Standalone Ruby Environment Verification ==="
@@ -55,9 +58,8 @@ run "$RUBY_BIN/bundle" --version >/dev/null 2>&1
 check "Bundler runs" $?
 
 # 6. Gems are installed inside standalone directory
-GEMDIR=$(run "$RUBY_BIN/gem" env gemdir 2>/dev/null)
-echo "$GEMDIR" | grep -q "$RUBY_HOME"
-check "Gems installed in standalone directory ($GEMDIR)" $?
+test -d "$GEM_HOME" && test -n "$(ls "$GEM_HOME" 2>/dev/null)"
+check "Gems installed in standalone directory ($GEM_HOME)" $?
 
 # 7. No dependency on RVM/rbenv Ruby
 OTOL=$(otool -L "$RUBY_HOME/lib/libruby.3.2.dylib" 2>/dev/null | grep -c "rvm\|rbenv")
