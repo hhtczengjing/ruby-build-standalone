@@ -1,0 +1,127 @@
+name: Build Ruby Standalone
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      ruby_version:
+        description: 'Ruby version to build'
+        required: false
+        default: '3.2.3'
+      fastlane_version:
+        description: 'Fastlane version to install'
+        required: false
+        default: '2.233.0'
+
+env:
+  RUBY_VERSION: ${{ github.event.inputs.ruby_version || '3.2.3' }}
+  FASTLANE_VERSION: ${{ github.event.inputs.fastlane_version || '2.233.0' }}
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          brew install autoconf automake libtool pkg-config openssl@3 readline libyaml libffi
+
+      - name: Download Ruby source
+        run: |
+          curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_VERSION%.*}/ruby-${RUBY_VERSION}.tar.gz" -o ruby.tar.gz
+          tar xzf ruby.tar.gz
+
+      - name: Configure Ruby
+        working-directory: ruby-${{ env.RUBY_VERSION }}
+        run: |
+          PREFIX="${GITHUB_WORKSPACE}/ruby-standalone"
+          ./configure \
+            --prefix="$PREFIX" \
+            --with-openssl-dir=$(brew --prefix openssl@3) \
+            --disable-install-doc \
+            --enable-shared
+
+      - name: Build Ruby
+        working-directory: ruby-${{ env.RUBY_VERSION }}
+        run: make -j$(sysctl -n hw.ncpu)
+
+      - name: Install Ruby
+        working-directory: ruby-${{ env.RUBY_VERSION }}
+        run: make install
+
+      - name: Verify Ruby installation
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
+          ruby --version
+          gem --version
+
+      - name: Update RubyGems and Bundler
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
+          gem update --system
+          gem install bundler
+
+      - name: Install Fastlane
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
+          export GEM_HOME="${GITHUB_WORKSPACE}/ruby-standalone/lib/ruby/gems/3.2.0"
+          gem install fastlane -v ${{ env.FASTLANE_VERSION }} --no-document
+
+      - name: Fix shebangs
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
+          RUBY_BIN="${GITHUB_WORKSPACE}/ruby-standalone/bin"
+          for f in "$RUBY_BIN"/*; do
+            if [ -f "$f" ] && [ -x "$f" ] && head -1 "$f" | grep -q "ruby"; then
+              sed -i '' '1s|^#!/.*ruby|#!/usr/bin/env ruby|' "$f"
+            fi
+          done
+
+      - name: Run verification
+        run: |
+          chmod +x verify.sh
+          ./verify.sh
+
+      - name: Package standalone
+        run: |
+          tar czf ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}.tar.gz -C "$GITHUB_WORKSPACE" ruby-standalone/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}
+          path: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - name: Download artifact (${{ matrix.arch }})
+        uses: actions/download-artifact@v4
+        with:
+          name: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}.tar.gz
+          generate_release_notes: true
