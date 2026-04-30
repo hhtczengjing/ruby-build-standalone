@@ -1,10 +1,6 @@
 name: Build Ruby Standalone
 
 on:
-  push:
-    branches: [main, master, feature/compile-deps-from-source]
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       ruby_version:
