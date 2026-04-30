@@ -67,3 +67,6 @@ libyaml-src/
 libyaml.tar.gz
 ruby.tar.gz
 ruby_*.tar.gz
+.worktrees/
+node_modules
+mcp/dist
