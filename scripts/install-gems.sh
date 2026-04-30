@@ -37,6 +37,18 @@ if str
     ARGV.shift
   end
 end
+
+# For --version, skip loading fastlane and just read from gemspec
+if ARGV.include?('--version') || ARGV.include?('-v') || ARGV.include?('--help') || ARGV.include?('-h')
+  spec_file = Dir.glob("#{Gem.dir}/specifications/fastlane-*.gemspec").first
+  if spec_file
+    spec = Gem::Specification.load(spec_file)
+    puts spec.version
+    exit 0
+  end
+end
+
+# Otherwise, load the actual fastlane binary
 fastlane_gem_dir = "#{Gem.dir}/gems"
 gem_bin = Dir.glob("#{fastlane_gem_dir}/fastlane-*/bin/fastlane").first
 if gem_bin
