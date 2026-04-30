@@ -24,6 +24,9 @@ env:
   OPENSSL_VERSION: ${{ github.event.inputs.openssl_version || '3.2.3' }}
   LIBYAML_VERSION: ${{ github.event.inputs.libyaml_version || '0.2.5' }}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ${{ matrix.runner }}
