@@ -2,7 +2,7 @@ name: Build Ruby Standalone
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, feature/compile-deps-from-source]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
@@ -14,11 +14,13 @@ on:
       fastlane_version:
         description: 'Fastlane version to install'
         required: false
-        default: '2.233.0'
+        default: '2.233.1'
 
 env:
   RUBY_VERSION: ${{ github.event.inputs.ruby_version || '3.2.3' }}
-  FASTLANE_VERSION: ${{ github.event.inputs.fastlane_version || '2.233.0' }}
+  FASTLANE_VERSION: ${{ github.event.inputs.fastlane_version || '2.233.1' }}
+  OPENSSL_VERSION: ${{ github.event.inputs.openssl_version || '3.2.3' }}
+  LIBYAML_VERSION: ${{ github.event.inputs.libyaml_version || '0.2.5' }}
 
 jobs:
   build:
@@ -34,12 +36,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install build tools
         run: |
-          brew install autoconf automake libtool pkg-config openssl@3 readline libyaml libffi
+          brew install autoconf automake libtool pkg-config
+
+      - name: Compile OpenSSL from source
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          curl -fsSL "https://github.com/openssl/openssl/releases/download/openssl-${{ env.OPENSSL_VERSION }}/openssl-${{ env.OPENSSL_VERSION }}.tar.gz" -o openssl.tar.gz
+          tar xzf openssl.tar.gz
+          cd "openssl-${{ env.OPENSSL_VERSION }}"
+          ./Configure "darwin64-${{ matrix.arch }}-cc" \
+            --prefix="${{ github.workspace }}/openssl/${{ matrix.arch }}" \
+            --openssldir="${{ github.workspace }}/openssl/${{ matrix.arch }}/ssl" \
+            -mmacosx-version-min=12.0 shared no-docs no-tests
+          make -j$(sysctl -n hw.ncpu) && make install_sw
+
+      - name: Compile libyaml from source
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          curl -fsSL "https://github.com/yaml/libyaml/releases/download/${{ env.LIBYAML_VERSION }}/yaml-${{ env.LIBYAML_VERSION }}.tar.gz" -o libyaml.tar.gz
+          tar xzf libyaml.tar.gz
+          cd "yaml-${{ env.LIBYAML_VERSION }}"
+          ./configure --prefix="${{ github.workspace }}/libyaml/${{ matrix.arch }}" --disable-static --enable-shared
+          make -j$(sysctl -n hw.ncpu) && make install
 
       - name: Download Ruby source
         run: |
+          cd "$GITHUB_WORKSPACE"
           curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_VERSION%.*}/ruby-${RUBY_VERSION}.tar.gz" -o ruby.tar.gz
           tar xzf ruby.tar.gz
 
@@ -49,9 +73,14 @@ jobs:
           PREFIX="${GITHUB_WORKSPACE}/ruby-standalone"
           ./configure \
             --prefix="$PREFIX" \
-            --with-openssl-dir=$(brew --prefix openssl@3) \
-            --disable-install-doc \
-            --enable-shared
+            --with-openssl-dir="${{ github.workspace }}/openssl/${{ matrix.arch }}" \
+            --with-libyaml-dir="${{ github.workspace }}/libyaml/${{ matrix.arch }}" \
+            --with-static-linked-ext \
+            --with-ext=openssl,psych,+ \
+            --enable-load-relative \
+            --enable-rpath \
+            --enable-shared \
+            --disable-install-doc
 
       - name: Build Ruby
         working-directory: ruby-${{ env.RUBY_VERSION }}
@@ -64,28 +93,84 @@ jobs:
       - name: Verify Ruby installation
         run: |
           export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
+          export GEM_HOME="${GITHUB_WORKSPACE}/ruby-standalone/lib/ruby/gems/${RUBY_VERSION%.*}.0"
+          unset GEM_PATH GEM_CACHE
           ruby --version
           gem --version
 
       - name: Update RubyGems and Bundler
         run: |
           export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
+          export GEM_HOME="${GITHUB_WORKSPACE}/ruby-standalone/lib/ruby/gems/${RUBY_VERSION%.*}.0"
+          unset GEM_PATH GEM_CACHE
+          gem sources --clear-all || true
+          gem sources --add https://rubygems.org/ || true
           gem update --system
           gem install bundler
 
       - name: Install Fastlane
         run: |
           export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
-          export GEM_HOME="${GITHUB_WORKSPACE}/ruby-standalone/lib/ruby/gems/3.2.0"
-          gem install fastlane -v ${{ env.FASTLANE_VERSION }} --no-document
+          export GEM_HOME="${GITHUB_WORKSPACE}/ruby-standalone/lib/ruby/gems/${RUBY_VERSION%.*}.0"
+          unset GEM_PATH GEM_CACHE
+          gem install fastlane -v ${{ env.FASTLANE_VERSION }} --no-document --ignore-dependencies
+          # Replace fastlane shim to bypass CFPropertyList Ruby 3.2 issue
+          FASTLANE_SHIM="${GITHUB_WORKSPACE}/ruby-standalone/bin/fastlane"
+          if [ -f "$FASTLANE_SHIM" ]; then
+            cat > "$FASTLANE_SHIM" << 'SHIM_EOF'
+          #!/usr/bin/env ruby
+          require 'rubygems'
+          version = ">= 0.a"
+          str = ARGV.first
+          if str
+            str = str.b[/\A_(.*)_\z/, 1]
+            if str and Gem::Version.correct?(str)
+              version = str
+              ARGV.shift
+            end
+          end
+          fastlane_gem_dir = "#{Gem.dir}/gems"
+          gem_bin = Dir.glob("#{fastlane_gem_dir}/fastlane-*/bin/fastlane").first
+          if gem_bin
+            load gem_bin
+          else
+            gem "fastlane", version
+            load Gem.bin_path("fastlane", "fastlane", version)
+          end
+          SHIM_EOF
+            chmod +x "$FASTLANE_SHIM"
+          fi
+
+      - name: Copy dylibs and fix paths
+        run: |
+          PREFIX="${GITHUB_WORKSPACE}/ruby-standalone"
+          ARCH="${{ matrix.arch }}"
+          mkdir -p "${PREFIX}/openssl/${ARCH}/lib" "${PREFIX}/libyaml/${ARCH}/lib"
+          cp "${{ github.workspace }}/openssl/${{ matrix.arch }}/lib/libssl.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/"
+          cp "${{ github.workspace }}/openssl/${{ matrix.arch }}/lib/libcrypto.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/"
+          cp "${{ github.workspace }}/libyaml/${{ matrix.arch }}/lib/libyaml-0.2.dylib" "${PREFIX}/libyaml/${ARCH}/lib/"
+
+          install_name_tool -id "@loader_path/libssl.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/libssl.3.dylib"
+          install_name_tool -id "@loader_path/libcrypto.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/libcrypto.3.dylib"
+          install_name_tool -id "@loader_path/libyaml-0.2.dylib" "${PREFIX}/libyaml/${ARCH}/lib/libyaml-0.2.dylib"
+
+          install_name_tool -change "@rpath/libcrypto.3.dylib" "@loader_path/libcrypto.3.dylib" \
+            "${PREFIX}/openssl/${ARCH}/lib/libssl.3.dylib" 2>/dev/null || true
+
+          LIBRUBY="${PREFIX}/lib/libruby.3.2.dylib"
+          install_name_tool -change "${{ github.workspace }}/openssl/${{ matrix.arch }}/lib/libssl.3.dylib" "@loader_path/../openssl/${ARCH}/lib/libssl.3.dylib" "$LIBRUBY" 2>/dev/null || true
+          install_name_tool -change "${{ github.workspace }}/openssl/${{ matrix.arch }}/lib/libcrypto.3.dylib" "@loader_path/../openssl/${ARCH}/lib/libcrypto.3.dylib" "$LIBRUBY" 2>/dev/null || true
+          install_name_tool -change "${{ github.workspace }}/libyaml/${{ matrix.arch }}/lib/libyaml-0.2.dylib" "@loader_path/../libyaml/${ARCH}/lib/libyaml-0.2.dylib" "$LIBRUBY" 2>/dev/null || true
+
+          install_name_tool -change "${PREFIX}/lib/libruby.3.2.dylib" "@executable_path/../lib/libruby.3.2.dylib" "${PREFIX}/bin/ruby" 2>/dev/null || true
+          install_name_tool -id "@executable_path/../lib/libruby.3.2.dylib" "$LIBRUBY" 2>/dev/null || true
 
       - name: Fix shebangs
         run: |
-          export PATH="${GITHUB_WORKSPACE}/ruby-standalone/bin:$PATH"
           RUBY_BIN="${GITHUB_WORKSPACE}/ruby-standalone/bin"
           for f in "$RUBY_BIN"/*; do
-            if [ -f "$f" ] && [ -x "$f" ] && head -1 "$f" | grep -q "ruby"; then
-              sed -i '' '1s|^#!/.*ruby|#!/usr/bin/env ruby|' "$f"
+            if [ -f "$f" ] && [ -x "$f" ] && head -1 "$f" | grep -q '#!'; then
+              sed -i '' $'1s|^#!.*/ruby.*|#!/usr/bin/env ruby|' "$f" 2>/dev/null || true
             fi
           done
 
@@ -104,4 +189,3 @@ jobs:
           name: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}
           path: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}.tar.gz
           retention-days: 30
-
