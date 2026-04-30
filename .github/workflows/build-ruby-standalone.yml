@@ -15,6 +15,8 @@ on:
         description: 'Fastlane version to install'
         required: false
         default: '2.233.1'
+  release:
+    types: [published]
 
 env:
   RUBY_VERSION: ${{ github.event.inputs.ruby_version || '3.2.3' }}
@@ -204,3 +206,21 @@ jobs:
           name: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}
           path: ruby_${{ env.RUBY_VERSION }}_${{ matrix.arch }}.tar.gz
           retention-days: 30
+
+  release:
+    needs: build
+    if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create or update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          tag_name: ${{ github.event.release.tag_name || format('ruby-{0}', github.event.inputs.ruby_version || '3.2.3') }}
+          generate_release_notes: true
+          draft: true
