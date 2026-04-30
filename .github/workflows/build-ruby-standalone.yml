@@ -166,7 +166,10 @@ jobs:
           install_name_tool -id "@loader_path/libcrypto.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/libcrypto.3.dylib"
           install_name_tool -id "@loader_path/libyaml-0.2.dylib" "${PREFIX}/libyaml/${ARCH}/lib/libyaml-0.2.dylib"
 
+          # Fix libssl -> libcrypto reference (both @rpath and absolute build path)
           install_name_tool -change "@rpath/libcrypto.3.dylib" "@loader_path/libcrypto.3.dylib" \
+            "${PREFIX}/openssl/${ARCH}/lib/libssl.3.dylib" 2>/dev/null || true
+          install_name_tool -change "${{ github.workspace }}/openssl/${{ matrix.arch }}/lib/libcrypto.3.dylib" "@loader_path/libcrypto.3.dylib" \
             "${PREFIX}/openssl/${ARCH}/lib/libssl.3.dylib" 2>/dev/null || true
 
           LIBRUBY="${PREFIX}/lib/libruby.3.2.dylib"
