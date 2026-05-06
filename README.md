@@ -7,7 +7,7 @@ Produce redistributable, self-contained builds of Ruby with Fastlane pre-install
 This project builds a portable Ruby environment that requires no RVM, rbenv, or other Ruby managers. The standalone package includes:
 
 - **Ruby 3.2.3** — compiled from source with shared library support
-- **Fastlane 2.233.0** — pre-installed and ready to use
+- **Fastlane 2.233.1** — pre-installed and ready to use
 - **Bundler** — for dependency management
 - **OpenSSL 3** — compiled from source and statically linked into libruby
 
@@ -131,12 +131,51 @@ This project uses GitHub Actions to build and release:
 
 See [build-ruby-standalone.yml](.github/workflows/build-ruby-standalone.yml) for details.
 
+## MCP Server
+
+The project includes a Model Context Protocol (MCP) server (`ruby-fastlane`) that allows AI assistants to interact with the standalone Ruby environment.
+
+### Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `ruby_env_status` | Check Ruby environment status | — |
+| `ruby_env_load` | Download and extract the standalone Ruby environment | — |
+| `ruby_env_run` | Execute a command within the Ruby environment | `command` (string) |
+| `ruby_env_gem_install` | Install a gem package | `gem_name` (string), `version` (optional), `source` (optional, defaults to `https://gems.ruby-china.com`) |
+
+### Usage
+
+Configure your MCP client to connect to the server:
+
+```json
+{
+  "mcpServers": {
+    "ruby-fastlane": {
+      "command": "node",
+      "args": ["mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+### Build
+
+```bash
+cd mcp
+npm install
+npm run build
+```
+
 ## Project Structure
 
 ```
 .
 ├── .github/workflows/
 │   └── build-ruby-standalone.yml   # CI/CD workflow
+├── mcp/
+│   ├── src/index.ts                # MCP server implementation
+│   └── dist/index.js               # Compiled MCP server
 ├── build.sh                        # Build script (compiles all deps from source)
 ├── use-ruby.sh                     # Environment activation script
 ├── verify.sh                       # Build verification script (14 checks)
