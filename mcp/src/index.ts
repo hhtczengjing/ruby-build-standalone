@@ -5,23 +5,28 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import child from "node:child_process";
-import util from "node:util";
-
-const exec = util.promisify(child.exec);
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
 const GITHUB_REPO = process.env.GITHUB_REPO ?? "hhtczengjing/ruby-build-standalone";
 const DEFAULT_RUBY_VERSION = "3.2.3";
-const FASTLANE_VERSION = process.env.FASTLANE_VERSION ?? "2.233.1";
 const DEFAULT_GEM_SOURCE = "https://gems.ruby-china.com";
+const COMMAND_TIMEOUT_MS = 60_000;
 
-const __filename = new URL(import.meta.url).pathname;
-const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, "../..");
-const CACHE_DIR = path.join(PROJECT_ROOT, "cache");
-const RUBY_STANDALONE_DIR = path.join(PROJECT_ROOT, "ruby-standalone");
-const RUBY_BIN = path.join(RUBY_STANDALONE_DIR, "bin");
+const WORKSPACE_DIR = process.cwd();
+const RUBY_STANDALONE_DIR = path.join(WORKSPACE_DIR, ".ruby_standalone");
+const CACHE_DIR = path.join(RUBY_STANDALONE_DIR, "cache");
+const RUBY_VERSIONS_DIR = path.join(RUBY_STANDALONE_DIR, "versions");
+
+// Returns the root directory for a given Ruby version.
+function getRubyDir(version: string): string {
+  return path.join(RUBY_VERSIONS_DIR, version);
+}
+
+// Returns the bin directory for a given Ruby version.
+function getRubyBinDir(version: string = DEFAULT_RUBY_VERSION): string {
+  return path.join(getRubyDir(version), "bin");
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -47,30 +52,31 @@ function ensureDir(dir: string): void {
   }
 }
 
-function isRubyReady(): boolean {
-  return fs.existsSync(RUBY_BIN) && fs.existsSync(path.join(RUBY_BIN, "ruby"));
+function isRubyReady(version: string = DEFAULT_RUBY_VERSION): boolean {
+  const binDir = getRubyBinDir(version);
+  return fs.existsSync(binDir) && fs.existsSync(path.join(binDir, "ruby"));
 }
 
-function getRubyVersion(): string | null {
-  if (!isRubyReady()) return null;
+function getRubyVersion(version: string = DEFAULT_RUBY_VERSION): string | null {
+  if (!isRubyReady(version)) return null;
   try {
-    const result = child.execFileSync(path.join(RUBY_BIN, "ruby"), ["--version"], {
+    const result = child.execFileSync(path.join(getRubyBinDir(version), "ruby"), ["--version"], {
       encoding: "utf-8",
-      env: cleanEnv(),
+      env: cleanEnv(version),
     });
-    const match = result.match(/(\d+\.\d+\.\d+)/);
+    const match = result.match(/^ruby (\d+\.\d+\.\d+)/);
     return match ? match[1] : null;
   } catch {
     return null;
   }
 }
 
-function getFastlaneVersion(): string | null {
-  if (!isRubyReady()) return null;
+function getFastlaneVersion(version: string = DEFAULT_RUBY_VERSION): string | null {
+  if (!isRubyReady(version)) return null;
   try {
-    const result = child.execFileSync(path.join(RUBY_BIN, "fastlane"), ["--version"], {
+    const result = child.execFileSync(path.join(getRubyBinDir(version), "fastlane"), ["--version"], {
       encoding: "utf-8",
-      env: cleanEnv(),
+      env: cleanEnv(version),
     });
     const lines = result.trim().split("\n");
     const lastLine = lines[lines.length - 1];
@@ -90,10 +96,19 @@ function getRUBY_VERSION(): string {
 
 // Download a URL to a file path using curl (respects https_proxy/http_proxy env vars)
 async function downloadWithCurl(url: string, dest: string): Promise<void> {
-  await exec(`curl -fsSL "${url}" -o "${dest}"`);
+  return new Promise((resolve, reject) => {
+    const proc = child.spawn("curl", ["-fsSL", url, "-o", dest], { stdio: ["pipe", "pipe", "pipe"] });
+    let stderr = "";
+    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code: number | null) => {
+      if (code === 0) resolve();
+      else reject(new Error(`curl failed with code ${code}: ${stderr}`));
+    });
+    proc.on("error", reject);
+  });
 }
 
-function cleanEnv(): NodeJS.ProcessEnv {
+function cleanEnv(version: string = DEFAULT_RUBY_VERSION): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   // Clear Ruby manager env vars (mirrors use-ruby.sh)
   delete env.GEM_HOME;
@@ -105,8 +120,13 @@ function cleanEnv(): NodeJS.ProcessEnv {
   delete env.MY_RUBY_HOME;
   delete env.RUBY_VERSION;
   delete env.GEM_ROOT;
+  // Point OpenSSL to system CA certificates
+  env.SSL_CERT_FILE = env.SSL_CERT_FILE || "/etc/ssl/cert.pem";
+  // Set GEM_HOME to standalone gem directory
+  const binDir = getRubyBinDir(version);
+  env.GEM_HOME = path.join(getRubyDir(version), "lib", "ruby", "gems", "3.2.0");
   // Prepend standalone Ruby to PATH
-  env.PATH = `${RUBY_BIN}:${env.PATH}`;
+  env.PATH = `${binDir}:${env.PATH}`;
   return env;
 }
 
@@ -143,20 +163,33 @@ async function downloadFromGitHubRelease(artifact: string, dest: string): Promis
   console.error(`Downloaded to ${dest} (${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
 }
 
-async function extractTarball(tarball: string, destDir: string): Promise<void> {
-  // Remove existing directory to avoid conflicts
-  if (fs.existsSync(destDir)) {
+async function extractTarball(tarball: string, version: string): Promise<void> {
+  const destDir = getRubyDir(version);
+  // Remove existing extracted content if present
+  if (fs.existsSync(path.join(destDir, "bin"))) {
     fs.rmSync(destDir, { recursive: true, force: true });
+    fs.mkdirSync(destDir, { recursive: true });
   }
-  console.error(`Extracting ${tarball} to ${path.dirname(destDir)}...`);
-  await exec(`tar -xzf "${tarball}" -C "${path.dirname(destDir)}"`);
-  console.error("Extraction complete.");
+  console.error(`Extracting ${tarball} to ${destDir}...`);
+  return new Promise((resolve, reject) => {
+    // --strip-components=1 removes the leading ruby-standalone/ directory from the archive
+    const proc = child.spawn("tar", ["-xzf", tarball, "--strip-components=1", "-C", destDir], { stdio: ["pipe", "pipe", "pipe"] });
+    let stderr = "";
+    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code: number | null) => {
+      if (code === 0) {
+        console.error("Extraction complete.");
+        resolve();
+      } else reject(new Error(`tar failed with code ${code}: ${stderr}`));
+    });
+    proc.on("error", reject);
+  });
 }
 
 // ── MCP Server ─────────────────────────────────────────────────────────────
 
 const server = new McpServer({
-  name: "ruby-fastlane",
+  name: "ruby-standalone",
   version: "1.0.0",
 });
 
@@ -225,17 +258,19 @@ server.registerTool(
     const version = getRUBY_VERSION();
     const artifact = artifactName(version, arch);
     const cacheFile = cachePath(version, arch);
+    const rubyDir = getRubyDir(version);
+    const rubyBinDir = getRubyBinDir(version);
 
     // Check if already extracted and ready
-    if (isRubyReady()) {
-      const rubyVer = getRubyVersion();
-      const fastlaneVer = getFastlaneVersion();
+    if (isRubyReady(version)) {
+      const rubyVer = getRubyVersion(version);
+      const fastlaneVer = getFastlaneVersion(version);
       return {
         content: [
           {
             type: "text",
             text: [
-              `Ruby environment already extracted at ${RUBY_STANDALONE_DIR}`,
+              `Ruby environment already extracted at ${rubyDir}`,
               `  Ruby: ${rubyVer ?? "unknown"}`,
               `  Fastlane: ${fastlaneVer ?? "unknown"}`,
               "",
@@ -244,7 +279,7 @@ server.registerTool(
           },
         ],
         structuredContent: {
-          path: RUBY_STANDALONE_DIR,
+          path: rubyDir,
           rubyVersion: rubyVer,
           fastlaneVersion: fastlaneVer,
           source: "already-extracted",
@@ -260,31 +295,31 @@ server.registerTool(
     }
 
     // Extract
-    await extractTarball(cacheFile, RUBY_STANDALONE_DIR);
-    const rubyVer = getRubyVersion();
-    const fastlaneVer = getFastlaneVersion();
+    await extractTarball(cacheFile, version);
+    const rubyVer = getRubyVersion(version);
+    const fastlaneVer = getFastlaneVersion(version);
     return {
       content: [
         {
           type: "text",
           text: [
-            `Ruby environment loaded at ${RUBY_STANDALONE_DIR}`,
+            `Ruby environment loaded at ${rubyDir}`,
             `  Ruby: ${rubyVer ?? "unknown"}`,
             `  Fastlane: ${fastlaneVer ?? "unknown"}`,
             "",
             "Usage:",
             "  Use ruby_env_run to execute commands within this environment.",
-            `  PATH will be prepended with ${RUBY_BIN}`,
+            `  PATH will be prepended with ${rubyBinDir}`,
             "  Ruby manager env vars are cleared automatically.",
           ].join("\n"),
         },
       ],
       structuredContent: {
-        path: RUBY_STANDALONE_DIR,
+        path: rubyDir,
         rubyVersion: rubyVer,
         fastlaneVersion: fastlaneVer,
         source: fs.existsSync(cacheFile) ? "cache" : "downloaded",
-        binPath: RUBY_BIN,
+        binPath: rubyBinDir,
       },
     };
   },
@@ -334,15 +369,16 @@ server.registerTool(
       });
       let stdout = "";
       let stderr = "";
-      result.stdout?.on("data", (data: Buffer) => {
-        stdout += data.toString();
-      });
-      result.stderr?.on("data", (data: Buffer) => {
-        stderr += data.toString();
-      });
+      result.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
+      result.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+
       const exitCode = await new Promise<number>((resolve, reject) => {
-        result.on("close", (code: number | null) => resolve(code ?? 1));
-        result.on("error", reject);
+        const timer = setTimeout(() => {
+          result.kill("SIGTERM");
+          reject(new Error(`Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`));
+        }, COMMAND_TIMEOUT_MS);
+        result.on("close", (code: number | null) => { clearTimeout(timer); resolve(code ?? 1); });
+        result.on("error", (err) => { clearTimeout(timer); reject(err); });
       });
       const outputLines: string[] = [];
       if (stdout.trim()) outputLines.push(stdout.trim());
@@ -421,12 +457,28 @@ server.registerTool(
         isError: true,
       };
     }
-    const versionFlag = version ? `-v ${version}` : "";
-    const gemSource = source ?? DEFAULT_GEM_SOURCE;
-    const command = `gem install ${gem_name} ${versionFlag} --source ${gemSource}`.trim();
+    const gemArgs = ["install", gem_name];
+    if (version) gemArgs.push("-v", version);
+    gemArgs.push("--source", source ?? DEFAULT_GEM_SOURCE);
+
     try {
-      const { stdout, stderr } = await exec(command, { env: cleanEnv() });
-      const exitCode = 0;
+      const result = child.spawn(path.join(getRubyBinDir(), "gem"), gemArgs, {
+        env: cleanEnv(),
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      result.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
+      result.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          result.kill("SIGTERM");
+          reject(new Error(`Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`));
+        }, COMMAND_TIMEOUT_MS);
+        result.on("close", (code: number | null) => { clearTimeout(timer); resolve(code ?? 1); });
+        result.on("error", (err) => { clearTimeout(timer); reject(err); });
+      });
       const outputLines: string[] = [];
       if (stdout.trim()) outputLines.push(stdout.trim());
       if (stderr.trim()) outputLines.push(stderr.trim());
@@ -442,13 +494,14 @@ server.registerTool(
           },
         ],
         structuredContent: {
-          success: true,
+          success: exitCode === 0,
           gemName: gem_name,
           version: installedVersion ?? version,
           exitCode,
           stdout: stdout.trim(),
           stderr: stderr.trim(),
         },
+        isError: exitCode !== 0,
       };
     } catch (error: unknown) {
       // exec throws on non-zero exit code, with the error containing stdout/stderr
@@ -499,7 +552,7 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("ruby-fastlane MCP server running on stdio");
+  console.error("ruby-standalone MCP server running on stdio");
 }
 
 main().catch((error) => {

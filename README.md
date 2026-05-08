@@ -105,7 +105,7 @@ See [build-ruby-standalone.yml](.github/workflows/build-ruby-standalone.yml) for
 
 ## MCP Server
 
-The project includes a Model Context Protocol (MCP) server (`ruby-fastlane`) that allows AI assistants to interact with the standalone Ruby environment.
+The project includes a Model Context Protocol (MCP) server (`ruby-standalone`) that allows AI assistants to interact with the standalone Ruby environment.
 
 ### Tools
 
@@ -123,13 +123,15 @@ Configure your MCP client to connect to the server:
 ```json
 {
   "mcpServers": {
-    "ruby-fastlane": {
+    "ruby-standalone": {
       "command": "node",
       "args": ["mcp/dist/index.js"]
     }
   }
 }
 ```
+
+The MCP server creates a `.ruby_standalone` directory in the **current working directory** of the MCP client. All Ruby environment operations (cache, extraction, gem installation) are scoped to that directory.
 
 ### Build
 

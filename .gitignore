@@ -64,3 +64,4 @@ workspace/
 node_modules
 mcp/dist
 Gemfile.lock
+.ruby_standalone
