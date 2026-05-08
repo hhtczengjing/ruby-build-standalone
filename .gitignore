@@ -56,17 +56,11 @@ build-iPhoneSimulator/
 # .rubocop-https?--*
 
 ruby-standalone
-ruby-3.2.3
-
-# Build artifacts (compile from source)
-openssl/
-openssl-src/
-openssl.tar.gz
-libyaml/
-libyaml-src/
-libyaml.tar.gz
-ruby.tar.gz
 ruby_*.tar.gz
+
+# Build workspace (all compilation happens here)
+workspace/
 .worktrees/
 node_modules
 mcp/dist
+Gemfile.lock

@@ -22,7 +22,7 @@ export GEM_HOME="$RUBY_HOME/lib/ruby/gems/3.2.0"
 run() {
     (
         export PATH="$RUBY_BIN:$PATH"
-        exec env -u GEM_PATH -u GEM_CACHE -u BUNDLE_PATH -u BUNDLE_GEMFILE -u MY_RUBY_HOME -u RUBY_VERSION -u GEM_ROOT "$@"
+        exec env -u GEM_PATH -u GEM_CACHE -u BUNDLE_PATH -u BUNDLE_GEMFILE -u MY_RUBY_HOME -u RUBY_VERSION -u GEM_ROOT -u RUBYLIB "$@"
     )
 }
 
@@ -63,45 +63,53 @@ check "Fastlane runs" $?
 run "$RUBY_BIN/bundle" --version >/dev/null 2>&1
 check "Bundler runs" $?
 
-# 6. Gems are installed inside standalone directory
+# 6. CocoaPods binary exists
+test -x "$RUBY_BIN/pod"
+check "CocoaPods binary exists" $?
+
+# 7. CocoaPods runs successfully
+run "$RUBY_BIN/pod" --version >/dev/null 2>&1
+check "CocoaPods runs" $?
+
+# 8. Gems are installed inside standalone directory
 test -d "$GEM_HOME" && test -n "$(ls "$GEM_HOME" 2>/dev/null)"
 check "Gems installed in standalone directory ($GEM_HOME)" $?
 
-# 7. No dependency on RVM/rbenv Ruby
+# 9. No dependency on RVM/rbenv Ruby
 OTOL=$(otool -L "$RUBY_HOME/lib/libruby.3.2.dylib" 2>/dev/null | grep -c "rvm\|rbenv")
 [ "$OTOL" -eq 0 ]
 check "No dependency on RVM/rbenv Ruby" $?
 
-# 8. OpenSSL extension works
+# 10. OpenSSL extension works
 run "$RUBY_BIN/ruby" -ropenssl -e 'puts OpenSSL::OPENSSL_VERSION' >/dev/null 2>&1
 check "OpenSSL extension works" $?
 
-# 9. Shebang uses env ruby (not hardcoded path)
+# 11. Shebang uses env ruby (not hardcoded path)
 SHEBANG=$(head -1 "$RUBY_BIN/fastlane" 2>/dev/null)
 echo "$SHEBANG" | grep -q "#!/usr/bin/env ruby"
 check "Fastlane uses env ruby shebang" $?
 
-# 10. No hardcoded Homebrew paths in dylib references
+# 12. No hardcoded Homebrew paths in dylib references
 HOMEBREW_REFS=$(find "$RUBY_HOME" -name "*.dylib" -o -name "*.bundle" | while IFS= read -r f; do
   otool -L "$f" 2>/dev/null | grep "/opt/homebrew" || true
 done | wc -l | tr -d ' ')
 [ "$HOMEBREW_REFS" -eq 0 ]
 check "No hardcoded Homebrew paths in dylib references" $?
 
-# 11. openssl.bundle does not exist (statically linked into libruby)
+# 13. openssl.bundle does not exist (statically linked into libruby)
 test ! -f "$RUBY_HOME/lib/ruby/3.2.0/$RUBY_TRIPLE/openssl.bundle"
 check "openssl.bundle not present (statically linked)" $?
 
-# 12. psych.bundle does not exist (statically linked into libruby)
+# 14. psych.bundle does not exist (statically linked into libruby)
 test ! -f "$RUBY_HOME/lib/ruby/3.2.0/$RUBY_TRIPLE/psych.bundle"
 check "psych.bundle not present (statically linked)" $?
 
-# 13. libruby references bundled OpenSSL and libyaml via @loader_path
+# 15. libruby references bundled OpenSSL and libyaml via @loader_path
 LIBRUBY_REFS=$(otool -L "$RUBY_HOME/lib/libruby.3.2.dylib" 2>/dev/null | grep -c "@loader_path")
 [ "$LIBRUBY_REFS" -ge 3 ]
 check "libruby references bundled OpenSSL and libyaml ($LIBRUBY_REFS refs)" $?
 
-# 14. Ruby binary uses @executable_path for libruby
+# 16. Ruby binary uses @executable_path for libruby
 otool -L "$RUBY_BIN/ruby" 2>/dev/null | grep "libruby" | grep -q "@executable_path"
 check "Ruby binary uses @executable_path for libruby" $?
 

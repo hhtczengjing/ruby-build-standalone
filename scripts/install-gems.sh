@@ -1,5 +1,5 @@
 #!/bin/bash
-# Update RubyGems, install Bundler and Fastlane
+# Update RubyGems, install Bundler and gems via Gemfile
 # Usage: bash scripts/install-gems.sh [arm64|x86_64]
 set -euo pipefail
 
@@ -17,10 +17,14 @@ unset GEM_PATH GEM_CACHE
 gem sources --clear-all || true
 gem sources --add https://rubygems.org/ || true
 gem update --system
-gem install bundler
+gem install bundler --force
 
-# Install Fastlane
-gem install fastlane -v "${FASTLANE_VERSION}" --no-document --ignore-dependencies
+# Install gems via Gemfile
+cp "${BUILD_DIR}/Gemfile" "${WORKSPACE_DIR}/Gemfile"
+BUNDLE_GEMFILE="${WORKSPACE_DIR}/Gemfile"
+export BUNDLE_GEMFILE
+cd "${WORKSPACE_DIR}"
+bundle install
 
 # Replace fastlane shim to bypass broken CFPropertyList dependency resolution
 FASTLANE_SHIM="${PREFIX}/bin/fastlane"

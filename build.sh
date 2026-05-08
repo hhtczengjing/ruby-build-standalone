@@ -15,6 +15,9 @@ unset MY_RUBY_HOME RUBY_VERSION GEM_ROOT GEM_HOME GEM_PATH
 
 source "${SCRIPTS_DIR}/build-common.sh"
 
+# Create workspace directory
+mkdir -p "${WORKSPACE_DIR}"
+
 # Re-set ARCH after clearing
 ARCH="${1:-$(uname -m)}"
 case "$ARCH" in

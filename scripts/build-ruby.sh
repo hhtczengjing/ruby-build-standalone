@@ -7,18 +7,18 @@ source "$(dirname "$0")/build-common.sh"
 ARCH="${1:-$ARCH}"
 
 # Download Ruby source
-cd "${BUILD_DIR}"
+cd "${WORKSPACE_DIR}"
 curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR}/ruby-${RUBY_VERSION}.tar.gz" -o ruby.tar.gz
 rm -rf "ruby-${RUBY_VERSION}"
 tar xzf ruby.tar.gz
 echo "  Downloaded and extracted ruby-${RUBY_VERSION}.tar.gz"
 
 # Configure Ruby
-cd "${BUILD_DIR}/ruby-${RUBY_VERSION}"
+cd "${WORKSPACE_DIR}/ruby-${RUBY_VERSION}"
 ./configure \
   --prefix="$PREFIX" \
-  --with-openssl-dir="${BUILD_DIR}/openssl/${ARCH}" \
-  --with-libyaml-dir="${BUILD_DIR}/libyaml/${ARCH}" \
+  --with-openssl-dir="${WORKSPACE_DIR}/openssl/${ARCH}" \
+  --with-libyaml-dir="${WORKSPACE_DIR}/libyaml/${ARCH}" \
   --with-static-linked-ext \
   --with-ext=openssl,psych,+ \
   --enable-load-relative \

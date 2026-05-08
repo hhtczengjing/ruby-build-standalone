@@ -8,9 +8,9 @@ ARCH="${1:-$ARCH}"
 
 # Copy OpenSSL and libyaml dylibs to ruby-standalone/
 mkdir -p "${PREFIX}/openssl/${ARCH}/lib" "${PREFIX}/libyaml/${ARCH}/lib"
-cp "${BUILD_DIR}/openssl/${ARCH}/lib/libssl.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/"
-cp "${BUILD_DIR}/openssl/${ARCH}/lib/libcrypto.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/"
-cp "${BUILD_DIR}/libyaml/${ARCH}/lib/libyaml-0.2.dylib" "${PREFIX}/libyaml/${ARCH}/lib/"
+cp "${WORKSPACE_DIR}/openssl/${ARCH}/lib/libssl.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/"
+cp "${WORKSPACE_DIR}/openssl/${ARCH}/lib/libcrypto.3.dylib" "${PREFIX}/openssl/${ARCH}/lib/"
+cp "${WORKSPACE_DIR}/libyaml/${ARCH}/lib/libyaml-0.2.dylib" "${PREFIX}/libyaml/${ARCH}/lib/"
 echo "  Copied dylibs to standalone directory"
 
 # Set install names for bundled dylibs
@@ -21,19 +21,19 @@ install_name_tool -id "@loader_path/libyaml-0.2.dylib" "${PREFIX}/libyaml/${ARCH
 # Fix libssl -> libcrypto reference
 install_name_tool -change "@rpath/libcrypto.3.dylib" "@loader_path/libcrypto.3.dylib" \
   "${PREFIX}/openssl/${ARCH}/lib/libssl.3.dylib" 2>/dev/null || true
-install_name_tool -change "${BUILD_DIR}/openssl/${ARCH}/lib/libcrypto.3.dylib" "@loader_path/libcrypto.3.dylib" \
+install_name_tool -change "${WORKSPACE_DIR}/openssl/${ARCH}/lib/libcrypto.3.dylib" "@loader_path/libcrypto.3.dylib" \
   "${PREFIX}/openssl/${ARCH}/lib/libssl.3.dylib" 2>/dev/null || true
 
 # Fix libruby dylib references to use @loader_path for internal openssl/libyaml
 LIBRUBY="${PREFIX}/lib/libruby.3.2.dylib"
-for dylib_path in "${BUILD_DIR}/openssl/${ARCH}/lib/libssl.3.dylib" \
-                  "${BUILD_DIR}/openssl/${ARCH}/lib/libcrypto.3.dylib"; do
+for dylib_path in "${WORKSPACE_DIR}/openssl/${ARCH}/lib/libssl.3.dylib" \
+                  "${WORKSPACE_DIR}/openssl/${ARCH}/lib/libcrypto.3.dylib"; do
   libname="$(basename "$dylib_path")"
   install_name_tool -change "$dylib_path" "@loader_path/../openssl/${ARCH}/lib/$libname" "$LIBRUBY" 2>/dev/null || true
   install_name_tool -change "@rpath/$libname" "@loader_path/../openssl/${ARCH}/lib/$libname" "$LIBRUBY" 2>/dev/null || true
 done
 # Fix libyaml separately (different target path)
-install_name_tool -change "${BUILD_DIR}/libyaml/${ARCH}/lib/libyaml-0.2.dylib" "@loader_path/../libyaml/${ARCH}/lib/libyaml-0.2.dylib" "$LIBRUBY" 2>/dev/null || true
+install_name_tool -change "${WORKSPACE_DIR}/libyaml/${ARCH}/lib/libyaml-0.2.dylib" "@loader_path/../libyaml/${ARCH}/lib/libyaml-0.2.dylib" "$LIBRUBY" 2>/dev/null || true
 install_name_tool -change "@rpath/libyaml-0.2.dylib" "@loader_path/../libyaml/${ARCH}/lib/libyaml-0.2.dylib" "$LIBRUBY" 2>/dev/null || true
 # Also fix if it was previously incorrectly pointed to openssl path
 install_name_tool -change "@loader_path/../openssl/${ARCH}/lib/libyaml-0.2.dylib" "@loader_path/../libyaml/${ARCH}/lib/libyaml-0.2.dylib" "$LIBRUBY" 2>/dev/null || true

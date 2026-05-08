@@ -3,11 +3,11 @@
 # Source this file first: source "$(dirname "$0")/build-common.sh"
 
 RUBY_VERSION="${RUBY_VERSION:-3.2.3}"
-FASTLANE_VERSION="${FASTLANE_VERSION:-2.233.1}"
 OPENSSL_VERSION="${OPENSSL_VERSION:-3.2.3}"
 LIBYAML_VERSION="${LIBYAML_VERSION:-0.2.5}"
 BUILD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PREFIX="${BUILD_DIR}/ruby-standalone"
+WORKSPACE_DIR="${BUILD_DIR}/workspace"
+PREFIX="${WORKSPACE_DIR}/ruby-standalone"
 
 # Detect architecture if not specified
 if [ -z "${ARCH:-}" ]; then

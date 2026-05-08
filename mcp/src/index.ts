@@ -107,19 +107,6 @@ function cleanEnv(): NodeJS.ProcessEnv {
   delete env.GEM_ROOT;
   // Prepend standalone Ruby to PATH
   env.PATH = `${RUBY_BIN}:${env.PATH}`;
-  // Set RUBYLIB to override hardcoded compile-time paths (CI runner absolute paths)
-  const arch = detectArch();
-  const rubyArch = arch === "arm64" ? "arm64-darwin24" : "x86_64-darwin24";
-  env.RUBYLIB = [
-    `${RUBY_STANDALONE_DIR}/lib/ruby/3.2.0/${rubyArch}`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/3.2.0`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/site_ruby/3.2.0/${rubyArch}`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/site_ruby/3.2.0`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/site_ruby`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/vendor_ruby/3.2.0/${rubyArch}`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/vendor_ruby/3.2.0`,
-    `${RUBY_STANDALONE_DIR}/lib/ruby/vendor_ruby`,
-  ].join(":");
   return env;
 }
 

@@ -6,6 +6,11 @@ set -euo pipefail
 source "$(dirname "$0")/build-common.sh"
 ARCH="${1:-$ARCH}"
 
+# Copy built standalone directory back to project root for local use
+rm -rf "${BUILD_DIR}/ruby-standalone"
+cp -a "${WORKSPACE_DIR}/ruby-standalone" "${BUILD_DIR}/ruby-standalone"
+echo "  Copied ruby-standalone to project root"
+
 # Fix shebangs for portability
 RUBY_BIN="${PREFIX}/bin"
 for f in "$RUBY_BIN"/*; do
@@ -23,7 +28,7 @@ chmod +x verify.sh
 # Package standalone
 OUTPUT="${BUILD_DIR}/ruby_${RUBY_VERSION}_${ARCH}.tar.gz"
 rm -f "$OUTPUT"
-tar czf "$OUTPUT" -C "$BUILD_DIR" ruby-standalone/
+tar czf "$OUTPUT" -C "$WORKSPACE_DIR" ruby-standalone/
 
 echo ""
 echo "═══════════════════════════════════════════════════════"
