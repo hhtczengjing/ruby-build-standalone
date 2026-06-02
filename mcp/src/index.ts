@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -15,7 +16,8 @@ const COMMAND_TIMEOUT_MS = 60_000;
 
 const WORKSPACE_DIR = process.cwd();
 const RUBY_STANDALONE_DIR = path.join(WORKSPACE_DIR, ".ruby_standalone");
-const CACHE_DIR = path.join(RUBY_STANDALONE_DIR, "cache");
+const HOME_DIR = os.homedir();
+const CACHE_DIR = path.join(HOME_DIR, ".ruby_standalone", "cache");
 const RUBY_VERSIONS_DIR = path.join(RUBY_STANDALONE_DIR, "versions");
 
 // Returns the root directory for a given Ruby version.
